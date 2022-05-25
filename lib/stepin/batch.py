@@ -49,12 +49,12 @@ def memory_batcher(*x_, y_=None, batch_size=-1, n_epochs=1, always_tuple=False):
             if not always_tuple and (len(x_) == 1):
                 ret_x = x_[0][i:upper_bound]
             else:
-                ret_x = tuple(xx[i:upper_bound] for xx in x_)
+                ret_x = tuple(None if xx is None else xx[i:upper_bound] for xx in x_)
             if y_ is None:
                 yield ret_x
             else:
                 if not always_tuple and (len(x_) == 1):
-                    yield (ret_x, y_[i:i + batch_size])
+                    yield ret_x, y_[i:i + batch_size]
                 else:
                     yield ret_x + (y_[i:i + batch_size],)
 

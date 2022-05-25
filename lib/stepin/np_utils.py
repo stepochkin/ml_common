@@ -4,6 +4,56 @@ import numpy as np
 from scipy.sparse import csr_matrix, lil_matrix
 
 
+def set_subtract(s1, s2, dtype=np.uint8):
+    a = (s1 - s2) > 0
+    return a.astype(dtype)
+
+
+def make_csr_ones(csr):
+    return csr_matrix((np.ones_like(csr.data), csr.indices, csr.indptr), shape=csr.shape)
+
+
+def row_col_csr(row, col, shape=None, dtype=None, force_ones=True):
+    res = csr_matrix(
+        (
+            np.ones(
+                row.shape[0],
+                dtype=(np.uint8 if force_ones else np.int32) if dtype is None else dtype
+            ),
+            (row, col)
+        ),
+        shape=shape
+    )
+    res.sum_duplicates()
+    if force_ones:
+        res = make_csr_ones(res)
+    return res
+
+
+def csr2ui(csr, use_counts=False):
+    coo = csr.tocoo()
+    res = np.column_stack([coo.row, coo.col])
+    if use_counts:
+        res = np.repeat(res, repeats=csr.data, axis=0)
+    return res
+
+
+def build_test_data(ui_test, user_count, item_count):
+    ui_test = ui_test[np.argsort(ui_test[:, 0])]
+    users = np.unique(ui_test[:, 0])
+    positives = row_col_csr(
+        ui_test[:, 0], ui_test[:, 1],
+        shape=(user_count, item_count)
+    )[users]
+
+    # pred_indices = np.column_stack([
+    #     np.repeat(users, item_count),
+    #     np.tile(np.arange(item_count), users.shape[0]),
+    # ])
+
+    return users, positives
+
+
 def read_npz(path, fname='data', is_sparse=False):
     with np.load(path) as f:
         if is_sparse:
@@ -74,9 +124,16 @@ def calc_group_lengths(arr, return_values=False, return_val_len=False):
     # noinspection PyUnresolvedReferences
     n = np.nonzero(d)[0]
     if len(n) == 0:
+        if arr.shape[0] == 0:
+            dn = np.array([], dtype=np.int32)
+            if return_values:
+                return dn, np.array([], dtype=arr.dtype)
+            if return_val_len:
+                return dn, 0
+            return dn
         dn = np.array([len(arr)])
         if return_values:
-            return dn, arr[0]
+            return dn, arr[:1]
         if return_val_len:
             return dn, 1
         return dn
@@ -101,6 +158,16 @@ def csr_group_indices(arr):
 
 def group_values(arr):
     return arr[np.insert(np.diff(arr).astype(np.bool), 0, True)]
+
+
+def split_groups(groups, *arrays):
+    diff = groups[1:] != groups[:-1]
+    # noinspection PyUnresolvedReferences
+    gind = diff.nonzero()[0] + 1
+    res = [np.array(np.split(arr, gind), dtype=object) for arr in arrays]
+    if len(res) == 1:
+        res = res[0]
+    return res
 
 
 def vrange(starts, stops):
@@ -153,6 +220,14 @@ def largest_indices(arr, n):
     return indices
 
 
+def largest_indices_dim2(arr, n):
+    indices = np.argpartition(arr, -n)[:, -n:]
+    rows = np.arange(arr.shape[0]).reshape([-1, 1])
+    values = arr[rows, indices]
+    indices = indices[rows, np.argsort(-values)]
+    return indices
+
+
 def matrix2array1d(m):
     return np.squeeze(np.array(m))
 
@@ -171,6 +246,13 @@ def build_sets_array(values, lens, height, width):
             np.r_[0, np.cumsum(lens)]
         ),
         shape=(height, width)
+    )
+
+
+def build_n_item_sets_array(arr, width):
+    return build_sets_array(
+        arr.reshape(-1), np.full(arr.shape[0], arr.shape[1]),
+        arr.shape[0], width
     )
 
 

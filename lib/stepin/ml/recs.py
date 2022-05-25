@@ -1,4 +1,6 @@
 import numpy as np
+
+from stepin.batch import memory_batcher
 from stepin.np_utils import build_1item_sets_array
 
 
@@ -23,3 +25,17 @@ def sample_rand_negs(user_positives, dtype=np.int32, allowed=None):
         # noinspection PyUnresolvedReferences
         diff_poss = diff_poss[np.nonzero(diff_counts)[0]]
     return neg_items
+
+
+def sample_2d_rand_negs(positives, second_dim, batch_size):
+    std_batch_users = np.repeat(np.arange(min(batch_size, positives.shape[0])), second_dim)
+    negs = []
+    for batch_pos in memory_batcher(positives, batch_size=batch_size):
+        if batch_pos.shape[0] == batch_size:
+            batch_users = std_batch_users
+        else:
+            batch_users = np.repeat(np.arange(batch_pos.shape[0]), second_dim)
+        batch_pos = batch_pos[batch_users]
+        negs_batch = sample_rand_negs(batch_pos).reshape([-1, second_dim])
+        negs.append(negs_batch)
+    return np.vstack(negs)

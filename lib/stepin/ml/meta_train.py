@@ -1,6 +1,7 @@
 import abc
 import logging
 from collections import namedtuple
+from functools import partial
 from itertools import product
 import os
 
@@ -52,6 +53,12 @@ class BestValues(object):
         self.lr_values = None
         self.values = None
         self.worse_count = 0
+
+    def clean_cache(self):
+        self.tvalues = None
+        self.prev_lr_values = None
+        self.lr_values = None
+        self.values = None
 
     def need_update(self):
         if self.pass_count < self.min_update_pass:
@@ -168,19 +175,85 @@ class BestValues(object):
 
 MultiBatch = namedtuple('MultiBatch', ['data', 'need_check'])
 
+class LrStrategy:
+    def __init__(self, model, best_values):
+        self._model = model
+        self._best_values = best_values
+
+    def _set_lr(self, learning_rate):
+        logging.info('Learning rate %s', learning_rate)
+        self._model.set_learning_rate(learning_rate)
+
+    def next_pass(self, pass_i):
+        pass
+
+    def next_batch(self, batch_i):
+        pass
+
+    def need_to_stop(self):
+        return True
+
+    def need_to_finish(self):
+        return True
+
+class ListLrStrategy(LrStrategy):
+    def __init__(self, best_values, model, learning_rates):
+        super().__init__(model, best_values)
+        self.learning_rates = learning_rates
+        self.lr_ind = 0
+        self._set_lr(self.learning_rates[self.lr_ind])
+
+    def next_pass(self, pass_i):
+        pass
+
+    def next_batch(self, batch_i):
+        pass
+
+    def need_to_stop(self):
+        is_last_learning_rate = self.lr_ind >= len(self.learning_rates) - 1
+        if self._best_values.need_to_stop(self.lr_ind, is_last_learning_rate):
+            self._best_values.lr_finished(self._model, is_last_learning_rate)
+            self.lr_ind += 1
+            if not is_last_learning_rate:
+                self._set_lr(self.learning_rates[self.lr_ind])
+                self._best_values.reset_worse_count()
+            return True
+        return False
+
+    def need_to_finish(self):
+        return self.lr_ind >= len(self.learning_rates)
+
+
+class ProcLrStrategy(LrStrategy):
+    def __init__(self, best_values, model, proc):
+        super().__init__(model, best_values)
+        self._proc = proc
+        self._pass_i = None
+
+    def next_pass(self, pass_i):
+        self._pass_i = pass_i
+
+    def next_batch(self, batch_i):
+        lr = self._proc(self._pass_i, batch_i)
+        self._set_lr(lr)
+
+    def need_to_stop(self):
+        if self._best_values.need_to_stop(0, True):
+            return True
+        return False
+
 
 def multi_pass_train(
-    model, train_iter_factory, valid_iter_factory, test_iter_factory, metric_calculator, best_values,
+    model, train_iter_factory, valid_iter_factory, test_iter_factory,
+    metric_calculator, best_values,
     learning_rates=None, before_train=None, show_custom_proc=None
 ):
-    if callable(learning_rates):
-        _multi_pass_train_dlr(
-            model, train_iter_factory, valid_iter_factory, test_iter_factory, metric_calculator, best_values,
-            learning_rates, before_train=before_train
-        )
-        return
     if learning_rates is None:
         learning_rates = [0.01]
+    if callable(learning_rates):
+        lr_strategy = ProcLrStrategy(best_values, model, learning_rates)
+    else:
+        lr_strategy = ListLrStrategy(best_values, model, learning_rates)
     has_target_value = hasattr(model, 'reset_target_value')
 
     def check_metric():
@@ -205,42 +278,38 @@ def multi_pass_train(
                 else:
                     show_custom_proc(custom)
             best_values.update(metric, model, custom=custom)
-        is_last_learning_rate = lr_i >= len(learning_rates) - 1
-        if best_values.need_to_stop(lr_i, is_last_learning_rate):
-            best_values.lr_finished(model, is_last_learning_rate)
-            return True
-        return False
+        return lr_strategy.need_to_stop()
 
     pi = 0
+    best_values.reset_worse_count()
+    need_break = False
     checked = False
+    batch_i = 0
     if before_train is not None:
         before_train()
-    for lr_i, lr in enumerate(learning_rates):
-        logging.info('Learning rate %s', lr)
-        model.set_learning_rate(lr)
-        # logging.debug('Actual learning rate %s', model.get_learning_rate())
-        best_values.reset_worse_count()
-        need_break = False
-        while True:
-            logging.info('Pass %s', pi)
-            if has_target_value:
-                model.reset_target_value()
-
-            for batch in train_iter_factory():
-                if isinstance(batch, MultiBatch):
-                    need_check = batch.need_check
-                    batch = batch.data
-                else:
-                    need_check = False
-                model.fit(batch)
-                checked = False
-                if need_check:
-                    checked = True
-                    if check_metric():
-                        need_break = True
-                        break
-            pi += 1
-            if need_break or (not checked and check_metric()):
+    while True:
+        logging.info('Pass %s', pi)
+        lr_strategy.next_pass(pi)
+        if has_target_value:
+            model.reset_target_value()
+        for batch in train_iter_factory():
+            if isinstance(batch, MultiBatch):
+                need_check = batch.need_check
+                batch = batch.data
+            else:
+                need_check = False
+            lr_strategy.next_batch(batch_i)
+            batch_i += 1
+            model.fit(batch)
+            checked = False
+            if need_check:
+                checked = True
+                if check_metric():
+                    need_break = True
+                    break
+        pi += 1
+        if need_break or (not checked and check_metric()):
+            if lr_strategy.need_to_finish():
                 break
     best_values.restore_best(model)
     if test_iter_factory is not None:
@@ -258,76 +327,6 @@ def multi_pass_train(
                 logging.info('%s', tcustom)
             else:
                 show_custom_proc(tcustom)
-
-
-def _multi_pass_train_dlr(
-    model, train_iter_factory, valid_iter_factory, test_iter_factory, metric_calculator, best_values,
-    learning_rates_proc, before_train=None
-):
-    has_target_value = hasattr(model, 'reset_target_value')
-
-    def check_metric():
-        if has_target_value:
-            logging.info('Target = %s', model.get_target_value())
-        if best_values.need_update():
-            v = metric_calculator(model, valid_iter_factory)
-            if isinstance(v, dict):
-                metric = v['metric']
-                custom = v.get('custom')
-                loss = v.get('loss')
-            else:
-                metric = v
-                custom = None
-                loss = None
-            if loss is not None and loss != 0.0:
-                logging.info('Loss = %s', loss)
-            logging.info('Score = %s', metric)
-            if custom is not None:
-                logging.info('%s', custom)
-            best_values.update(metric, model, custom=custom)
-        if best_values.need_to_stop(0, True):
-            return True
-        return False
-
-    pi = 0
-    best_values.reset_worse_count()
-    need_break = False
-    checked = False
-    batch_i = 0
-    if before_train is not None:
-        before_train()
-    while True:
-        logging.info('Pass %s', pi)
-        if has_target_value:
-            model.reset_target_value()
-        for batch in train_iter_factory():
-            if isinstance(batch, MultiBatch):
-                need_check = batch.need_check
-                batch = batch.data
-            else:
-                need_check = False
-            lr = learning_rates_proc(pi, batch_i)
-            batch_i += 1
-            # logging.info('Learning rate %s', lr)
-            model.set_learning_rate(lr)
-            model.fit(batch)
-            checked = False
-            if need_check:
-                checked = True
-                if check_metric():
-                    need_break = True
-                    break
-        pi += 1
-        if need_break or (not checked and check_metric()):
-            break
-    best_values.restore_best(model)
-    tv = metric_calculator(model, test_iter_factory)
-    if isinstance(tv, dict):
-        tscore = tv['metric']
-    else:
-        tscore = tv
-    best_values.update_tscore(tscore, model)
-    logging.info('Test metric = %s', tscore)
 
 
 def _dict_product(d):
@@ -372,11 +371,7 @@ def _find_infos(infos, params):
 def _find_best_info(infos):
     best_info = None
     for info in infos:
-        if best_info is None or (
-            info['test_score'] < best_info['test_score']
-            if info.get('test_score') is not None and best_info.get('test_score') is not None
-            else info['score'] < best_info['score']
-        ):
+        if need_to_save(best_info, info):
             best_info = info
     return best_info
 
@@ -395,6 +390,18 @@ def _param_iter(tconfigs):
             for mdict in mconfigs:
                 for oconfig, dconfig, mconfig in _three_dict_product(odict, tconfig.get('data', {}), mdict):
                     yield oconfig, dconfig, mconfig
+
+
+def need_to_save(best_saved_info, best_info):
+    if best_saved_info is None:
+        return True
+    has_test_score = (
+        best_info.get('test_score') is not None and
+        best_saved_info.get('test_score') is not None
+    )
+    if has_test_score:
+        return best_info['test_score'] < best_saved_info['test_score']
+    return best_info['score'] < best_saved_info['score']
 
 
 def meta_train(
@@ -434,8 +441,10 @@ def meta_train(
                 learning_rates = eval(learning_rates)
             before_train = getattr(train_iter_factory, 'before_train', None)
             multi_pass_train(
-                model, lambda: train_iter_factory(dconfig), lambda: valid_iter_factory(dconfig),
-                None if test_iter_factory is None else lambda: test_iter_factory(dconfig),
+                model,
+                partial(train_iter_factory, dconfig),
+                partial(valid_iter_factory, dconfig),
+                None if test_iter_factory is None else partial(test_iter_factory, dconfig),
                 metric_calculator, best_values, learning_rates=learning_rates,
                 before_train=before_train,
                 show_custom_proc=show_custom_proc
@@ -450,6 +459,9 @@ def meta_train(
             if best_values.tcustom is not None:
                 info['test_custom'] = best_values.tcustom
             m_infos.append(info)
+            best_values.clean_cache()
+            if hasattr(model, 'to_cpu'):
+                model.to_cpu()
             if the_best_values is None or best_values.best_score < the_best_values.best_score:
                 the_best_values = best_values
                 the_best_model = model
@@ -466,41 +478,27 @@ def meta_train(
                     best=_find_best_info(all_infos),
                 )
             )
-            if save_each_best_model:
-                if best_saved_info is None or (
-                    best_info is not None and (
-                        best_info['test_score'] < best_saved_info['test_score']
-                        if (
-                            best_info.get('test_score') is not None and
-                            best_saved_info.get('test_score') is not None
-                        )
-                        else best_info['score'] < best_saved_info['score']
-                    )
-                ):
-                    # the_best_values.restore_tbest(the_best_model)
+            if save_each_best_model and (model_path is not None):
+                if need_to_save(best_saved_info, best_info):
                     ensure_parent_path(model_path)
                     ensure_parent_path(model_params_path)
-                    save_path = the_best_model.save(model_path, params_path=model_params_path)
+                    save_path = the_best_model.save(
+                        model_path, params_path=model_params_path,
+                        dconfig=the_best_dconfig
+                    )
                     logging.debug("Model with score %s saved to file: %s", the_best_values.best_score, save_path)
                     best_saved_info = best_info
                     if best_info_calculator is not None:
                         best_info_calculator(the_best_model, lambda: valid_iter_factory(the_best_dconfig))
 
-    if not save_each_best_model:
-        if best_saved_info is None or (
-            best_info is not None and (
-                best_info['test_score'] < best_saved_info['test_score']
-                if (
-                    best_info.get('test_score') is not None and
-                    best_saved_info.get('test_score') is not None
-                )
-                else best_info['score'] < best_saved_info['score']
-            )
-        ):
-            # the_best_values.restore_tbest(the_best_model)
+    if not save_each_best_model and (model_path is not None):
+        if need_to_save(best_saved_info, best_info):
             ensure_parent_path(model_path)
             ensure_parent_path(model_params_path)
-            save_path = the_best_model.save(model_path, params_path=model_params_path)
+            save_path = the_best_model.save(
+                model_path, params_path=model_params_path,
+                dconfig=the_best_dconfig
+            )
             logging.debug("Model with score %s saved to file: %s", the_best_values.best_score, save_path)
             if best_info_calculator is not None:
                 best_info_calculator(the_best_model, lambda: valid_iter_factory(the_best_dconfig))

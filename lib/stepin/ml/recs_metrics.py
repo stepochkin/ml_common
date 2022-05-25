@@ -4,9 +4,88 @@ from multiprocessing import Pool
 
 import numpy as np
 import scipy.sparse as sp
+from sklearn.metrics.pairwise import cosine_similarity
+from stepin.batch import memory_batcher
 
 from stepin.log_utils import safe_close
-from stepin.np_utils import build_sets_array, build_1item_sets_array
+from stepin.np_utils import build_sets_array, build_1item_sets_array, build_n_item_sets_array, \
+    set_subtract
+
+
+def calc_personalization(recs):
+    recs_csr = sp.csr_matrix(
+        (
+            np.ones(recs.shape[0] * recs.shape[1]),
+            recs.reshape(-1),
+            np.arange((recs.shape[0] + 1) * recs.shape[1], step=recs.shape[1])
+        )
+        # shape=[recs.shape[0], item_count]
+    )
+    similarities = recs_csr.dot(recs_csr.T).todense()
+    similarities = np.multiply(similarities, np.tri(similarities.shape[0], k=-1))
+    return (
+        similarities.sum() /
+        recs.shape[1] /
+        (similarities.shape[0] * (similarities.shape[0] - 1) / 2.0)
+    )
+
+
+def calc_intra_list_similarity(recs, features: sp.csr_matrix):
+    topk = recs.shape[1]
+    recs_features = features[recs.reshape(-1)]
+    recs_features_lens = np.sqrt(recs_features.getnnz(axis=1))
+    recs_features_lens = recs_features_lens.reshape([-1, topk])
+    recs_features = np.array(recs_features.todense()).reshape(
+        [-1, topk, features.shape[1]]
+    )
+    recs_features_lens = np.einsum('ui,uj->uij', recs_features_lens, recs_features_lens)
+    cos_sim = np.zeros([recs.shape[0], topk, topk], dtype=np.float64)
+    np.divide(
+        np.einsum('uir,ujr->uij', recs_features, recs_features),
+        recs_features_lens,
+        out=cos_sim,
+        where=recs_features_lens > 0.0
+    )
+    cos_sim *= np.triu(np.ones([topk, topk]), k=1).reshape([1, topk, topk])
+    cos_sim = np.sum(cos_sim, axis=(1, 2)) / (topk * (topk - 1) / 2)
+    return cos_sim.mean()
+
+
+def calc_intra_list_similarity_sum(recs, features: sp.csr_matrix):
+    topk = recs.shape[1]
+    upper_right = np.triu_indices(topk, k=1)
+    ils_sum = 0.0
+    for user_recs in recs:
+        recs_features = features[user_recs]
+        similarity = cosine_similarity(X=recs_features, dense_output=False)
+        ils_sum += np.mean(similarity[upper_right])
+    return ils_sum, recs.shape[0]
+
+
+def calc_intra_list_similarity_sp(recs, features: sp.csr_matrix):
+    ils_sum, count = calc_intra_list_similarity_sum(recs, features)
+    return ils_sum / count
+
+
+def _calc_ils_mtcall(data):
+    recs, features = data
+    return calc_intra_list_similarity_sum(recs, features)
+
+
+def calc_intra_list_similarity_sp_mt(recs, features: sp.csr_matrix, proc_count=1):
+    batch_size = int(recs.shape[0] / proc_count)
+    ils_sum = 0.0
+    count = 0
+    with Pool(proc_count) as p:
+        for ils_batch, count_batch in p.imap_unordered(
+            _calc_ils_mtcall, (
+                (recs_batch, features)
+                for recs_batch in memory_batcher(recs, batch_size=batch_size)
+            )
+        ):
+            ils_sum += ils_batch
+            count += count_batch
+    return ils_sum / count
 
 
 def calc_ndcg(pred_indices, true, topk=None, calc_mean=True):
@@ -44,7 +123,12 @@ def calc_batch_precision_recall_ndcg(pred_indices, true, topk=None):
     tps = tp.cumsum(axis=1)
     precisions = tps / np.arange(1, topk + 1).reshape([1, -1])
     precisions = precisions.mean(axis=0)
-    recalls = tps / true.getnnz(axis=1).reshape([-1, 1])
+    recalls = np.ones_like(tps, dtype=np.float32)
+    true_cnt = true.getnnz(axis=1).reshape([-1, 1])
+    recalls = np.divide(
+        tps, true_cnt,
+        out=recalls, where=true_cnt > 0
+    )
     recalls = recalls.mean(axis=0)
     discount = 1 / (np.log2(np.arange(2, topk + 2)))
     discount = discount.reshape([1, -1])
@@ -55,6 +139,22 @@ def calc_batch_precision_recall_ndcg(pred_indices, true, topk=None):
     np.divide(dcg, idcg, out=ndcg, where=idcg > 0.0)
     ndcg = ndcg.mean(axis=0)
     return precisions, recalls, ndcg
+
+
+def calc_uplift(recs, logged_recs, uplift_positives):
+    recs = build_n_item_sets_array(recs, uplift_positives.shape[1])
+    rec_log = recs.multiply(logged_recs)
+    rec_log_cnt = rec_log.sum(axis=1)
+    rec_no_log = set_subtract(recs, logged_recs)
+    rec_no_log_cnt = rec_no_log.sum(axis=1)
+    is_used = (rec_log_cnt > 0) & (rec_no_log_cnt > 0)
+    # u1 = recs.multiply(viewed_recs).sum(axis=1)
+    rec_log_view_cnt = rec_log.multiply(uplift_positives).sum(axis=1)
+    rec_log_rate = rec_log_view_cnt[is_used] / rec_log_cnt[is_used]
+    rec_no_log_view_cnt = rec_no_log.multiply(uplift_positives).sum(axis=1)[is_used]
+    rec_no_log_rate = rec_no_log_view_cnt / rec_no_log.sum(axis=1)[is_used]
+    uplift = (rec_log_rate - rec_no_log_rate).mean()
+    return uplift
 
 
 def select_first_cols(arr, numbers):

@@ -215,6 +215,7 @@ class TorchModel(TrainModel):
 
 def load_model(model_cls, model_path, params_or_path):
     params = read_json(params_or_path) if isinstance(params_or_path, str) else params_or_path
+    params.pop('dconfig')
     return TorchModel.create_from_file(model_cls, params, model_path)
 
 

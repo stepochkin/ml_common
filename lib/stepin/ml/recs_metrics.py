@@ -152,7 +152,7 @@ def calc_uplift(recs, logged_recs, uplift_positives):
     rec_log_view_cnt = rec_log.multiply(uplift_positives).sum(axis=1)
     rec_log_rate = rec_log_view_cnt[is_used] / rec_log_cnt[is_used]
     rec_no_log_view_cnt = rec_no_log.multiply(uplift_positives).sum(axis=1)[is_used]
-    rec_no_log_rate = rec_no_log_view_cnt / rec_no_log.sum(axis=1)[is_used]
+    rec_no_log_rate = rec_no_log_view_cnt / rec_no_log_cnt[is_used]
     uplift = (rec_log_rate - rec_no_log_rate).mean()
     return uplift
 

@@ -13,17 +13,13 @@ def make_csr_ones(csr):
     return csr_matrix((np.ones_like(csr.data), csr.indices, csr.indptr), shape=csr.shape)
 
 
-def row_col_csr(row, col, shape=None, dtype=None, force_ones=True):
-    res = csr_matrix(
-        (
-            np.ones(
-                row.shape[0],
-                dtype=(np.uint8 if force_ones else np.int32) if dtype is None else dtype
-            ),
-            (row, col)
-        ),
-        shape=shape
-    )
+def row_col_csr(row, col, values=None, shape=None, dtype=None, force_ones=True):
+    if values is None:
+        values = np.ones(
+            row.shape[0],
+            dtype=(np.uint8 if force_ones else np.int32) if dtype is None else dtype
+        )
+    res = csr_matrix((values, (row, col)), shape=shape)
     res.sum_duplicates()
     if force_ones:
         res = make_csr_ones(res)

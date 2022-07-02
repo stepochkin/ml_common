@@ -124,12 +124,12 @@ class TorchModel(TrainModel):
     def get_target_value(self):
         return self.target_value
 
-    def ff(self, data):
-        return self.model(data)
+    def ff(self, *data):
+        return self.model(*data)
 
     def fit(self, data):
         self.model.train()
-        loss = self.model_factory.calc_loss(self, data)
+        loss = self.model_factory.calc_loss(self, *data)
         # fields, target = data
         # fields, target = fields.to(self.device), target.to(self.device)
         # y = self.model(fields)
@@ -166,6 +166,15 @@ class TorchModel(TrainModel):
             for t in struct
         )
 
+    def struct_to_device(self, struct):
+        if torch.is_tensor(struct):
+            return struct.to(self.device)
+        if isinstance(struct, dict):
+            return {n: self.struct_to_device(t) for n, t in struct.items()}
+        if isinstance(struct, (tuple, list)):
+            return tuple(self.struct_to_device(t) for t in struct)
+        return struct
+
     def predict_iter(
         self, x, call_proc=None, custom_proc=None,
         to_device_proc=None, tensor_cnt=1
@@ -178,13 +187,15 @@ class TorchModel(TrainModel):
         with torch.no_grad():
             for bx in x:
                 if to_device_proc is None:
-                    if isinstance(bx, dict):
-                        bx = {
-                            n: t.to(self.device) if torch.is_tensor(t) else t
-                            for n, t in bx.items()
-                        }
-                    else:
-                        bx = self.list_struct_to_device(bx)
+                    bx = self.struct_to_device(bx)
+
+                    # if isinstance(bx, dict):
+                    #     bx = {
+                    #         n: t.to(self.device) if torch.is_tensor(t) else t
+                    #         for n, t in bx.items()
+                    #     }
+                    # else:
+                    #     bx = self.list_struct_to_device(bx)
                 else:
                     bx = to_device_proc(self, bx)
                 # if len(bx) == 1:

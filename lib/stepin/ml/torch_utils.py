@@ -1,5 +1,25 @@
+from collections import OrderedDict
+
 import numpy as np
 import torch
+
+
+def save_model_as_numpy(model, path):
+    save_dict = {}
+    names = []
+    for n, t in model.state_dict().items():
+        save_dict[n] = t.cpu().numpy()
+        names.append(n)
+    save_dict['__saved_names__'] = names
+    np.savez_compressed(path, **save_dict)
+
+
+def load_model_as_numpy(model, path):
+    with np.load(path) as f:
+        state_dict = OrderedDict(
+            (fname, torch.from_numpy(f[fname])) for fname in f['__saved_names__']
+        )
+    model.load_state_dict(state_dict)
 
 
 def np2csr(csr, device=None):

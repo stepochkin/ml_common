@@ -175,6 +175,7 @@ class BestValues:
 
 MultiBatch = namedtuple('MultiBatch', ['data', 'need_check'])
 
+
 class LrStrategy:
     def __init__(self, model, best_values):
         self._model = model
@@ -195,6 +196,7 @@ class LrStrategy:
 
     def need_to_finish(self):
         return True
+
 
 class ListLrStrategy(LrStrategy):
     def __init__(self, best_values, model, learning_rates):
@@ -318,6 +320,7 @@ def need_to_save(best_saved_info, best_info):
         return best_info['test_score'] < best_saved_info['test_score']
     return best_info['score'] < best_saved_info['score']
 
+
 class Trainer:
     def __init__(self, config, model_factory, train_iter_factory, valid_iter_factory):
         self.config = config
@@ -331,6 +334,7 @@ class Trainer:
         self.test_iter_factory = None
         self.show_custom_proc = None
         self.on_new_params = None
+        self.on_init_data = None
         self.best_info_calculator = None
 
         self.best_saved_info = None
@@ -358,6 +362,9 @@ class Trainer:
     def set_on_new_params(self, value):
         self.on_new_params = value
 
+    def set_on_init_data(self, value):
+        self.on_init_data = value
+
     def set_best_info_calculator(self, value):
         self.best_info_calculator = value
 
@@ -373,6 +380,7 @@ class Trainer:
         best_info = None
         m_infos = []
         repeat_count = self.config.get('repeat_count', 1)
+        prev_dconfig = None
         for oconfig, dconfig, mconfig in _param_iter(self.config['train_params']):
             self.dconfig = dconfig
             if self.on_new_params is not None:
@@ -383,7 +391,18 @@ class Trainer:
             else:
                 linfos = _find_infos(last_infos, all_config)
                 rcount = max(0, repeat_count - len(linfos))
-            logging.info('Training %s times', rcount)
+            if rcount > 0:
+                logging.info('Training %s times', rcount)
+            if (
+                    (self.on_init_data is not None) and (rcount > 0) and
+                    ((prev_dconfig is None) or (prev_dconfig != dconfig))
+            ):
+                try:
+                    self.on_init_data(dconfig, mconfig)
+                except Exception as e:
+                    raise Exception(
+                        'Error on config: ' + str(dconfig) + '  ' + str(mconfig)
+                    ) from e
             for repeat_i in range(rcount):
                 model = self.model_factory(mconfig, dconfig)
                 self.model = model
@@ -417,6 +436,7 @@ class Trainer:
                         )
                     )
                 self._save_model(best_info)
+            prev_dconfig = dconfig
         self._save_model(best_info)
 
     def _build_info(self, all_config):

@@ -175,6 +175,7 @@ class BestValues(object):
 
 MultiBatch = namedtuple('MultiBatch', ['data', 'need_check'])
 
+
 class LrStrategy:
     def __init__(self, model, best_values):
         self._model = model
@@ -195,6 +196,7 @@ class LrStrategy:
 
     def need_to_finish(self):
         return True
+
 
 class ListLrStrategy(LrStrategy):
     def __init__(self, best_values, model, learning_rates):
@@ -408,7 +410,7 @@ def meta_train(
     config, model_factory, model_path, model_params_path, models_info_path,
     train_iter_factory, valid_iter_factory, metric_calculator,
     test_iter_factory=None, show_custom_proc=None, on_new_params=None,
-    best_info_calculator=None
+    best_info_calculator=None, on_init_data=None
 ):
     last_infos = tuple()
     if os.path.exists(models_info_path):
@@ -422,6 +424,7 @@ def meta_train(
     best_info = None
     m_infos = []
     repeat_count = config.get('repeat_count', 1)
+    prev_dconfig = None
     for oconfig, dconfig, mconfig in _param_iter(config['train_params']):
         if on_new_params is not None:
             on_new_params(mconfig)
@@ -431,7 +434,18 @@ def meta_train(
         else:
             linfos = _find_infos(last_infos, all_config)
             rcount = max(0, repeat_count - len(linfos))
-        logging.info('Training %s times', rcount)
+        if rcount > 0:
+            logging.info('Training %s times', rcount)
+        if (
+            (on_init_data is not None) and (rcount > 0) and
+            ((prev_dconfig is None) or (prev_dconfig != dconfig))
+        ):
+            try:
+                on_init_data(dconfig, mconfig)
+            except Exception as e:
+                raise Exception(
+                    'Error on config: ' + str(dconfig) + '  ' + str(mconfig)
+                ) from e
         for repeat_i in range(rcount):
             model = model_factory(mconfig, dconfig)
             best_values = config_best_values(oconfig)
@@ -490,6 +504,7 @@ def meta_train(
                     best_saved_info = best_info
                     if best_info_calculator is not None:
                         best_info_calculator(the_best_model, lambda: valid_iter_factory(the_best_dconfig))
+        prev_dconfig = dconfig
 
     if not save_each_best_model and (model_path is not None):
         if need_to_save(best_saved_info, best_info):

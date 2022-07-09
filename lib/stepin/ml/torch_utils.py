@@ -45,6 +45,13 @@ def np2coo(coo, device=None):
     )
 
 
+def csr2torch(d):
+    return (
+        torch.from_numpy(d.indices),
+        torch.from_numpy(d.indptr[:-1]),
+    )
+
+
 def sum_var_parts(t, lens, weights=None):
     t_size_0 = t.size(0)
     ind_x = torch.repeat_interleave(torch.arange(lens.size(0), device=t.device), lens)

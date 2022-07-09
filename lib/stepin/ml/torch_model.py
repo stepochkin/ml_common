@@ -4,18 +4,75 @@ import os
 import numpy as np
 import torch
 
-from stepin.json_utils import read_json
-from stepin.ml.meta_train import TrainModel
+from stepin.cfg_utils import extend_dict_0
+from stepin.ml.train_model import TrainModel
+
+
+def fnone(f):
+    if f is None:
+        return None
+    return float(f)
+
+
+def fcnone(config, name):
+    return fnone(config.get(name))
+
+
+def inone(i):
+    if i is None:
+        return None
+    return int(i)
+
+
+def icnone(config, name):
+    return inone(config.get(name))
+
+
+def lnone(lst, klass):
+    if lst is None:
+        return None
+    return [klass(i) for i in lst]
+
+
+def lcnone(config, name, klass):
+    return lnone(config.get(name), klass)
+
+
+def linone(lst):
+    if lst is None:
+        return None
+    return [int(i) for i in lst]
+
+
+def licnone(config, name):
+    return linone(config.get(name))
+
+
+class DictModelFactory(object):
+    def __init__(self, klass, mem_params=None, **param_dict):
+        self.klass = klass
+        self.param_dict = param_dict
+        self.mem_params = mem_params
+
+    def create(self):
+        return self.klass(**extend_dict_0(self.param_dict, self.mem_params))
+
+    def get_params(self):
+        return self.param_dict
 
 
 class TorchModel(TrainModel):
     def __init__(
-        self, model_factory, device='cpu',
+        self, model_factory, loss_proc=None, device='cpu',
         weight_decay=0.0, optimizer_params: dict = None
     ):
         super(TorchModel, self).__init__()
         self.device = torch.device(device)
         self.model_factory = model_factory
+        if loss_proc is None:
+            self.loss_proc = self.model_factory.calc_loss
+        else:
+            self.loss_proc = loss_proc
         self.model: torch.nn.Module = self.model_factory.create()
         self.model.to(self.device)
         if optimizer_params is None:
@@ -124,16 +181,12 @@ class TorchModel(TrainModel):
     def get_target_value(self):
         return self.target_value
 
-    def ff(self, *data):
-        return self.model(*data)
+    def ff(self, *data, **kwdata):
+        return self.model(*data, **kwdata)
 
     def fit(self, data):
         self.model.train()
-        loss = self.model_factory.calc_loss(self, *data)
-        # fields, target = data
-        # fields, target = fields.to(self.device), target.to(self.device)
-        # y = self.model(fields)
-        # loss = self.criterion(y, target.float())
+        loss = self.loss_proc(self, *data)
         self.model.zero_grad()
         loss.backward()
         # torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
@@ -143,14 +196,14 @@ class TorchModel(TrainModel):
 
     def loss(self, data, is_train):
         self.model.train(mode=is_train)
-        return self.model_factory.calc_loss(self, data)
+        return self.loss_proc(self, *data)
 
     def loss_iter(self, it, is_train):
         self.model.train(mode=is_train)
         loss = 0.0
         n = 0
         for bx in it:
-            loss += self.model_factory.calc_loss(self, bx).item()
+            loss += self.loss_proc(self, *bx).item()
             n += 1
         return loss / n
 
@@ -158,13 +211,6 @@ class TorchModel(TrainModel):
         self.model.eval()
         with torch.no_grad():
             return self.model(x)
-
-    def list_struct_to_device(self, struct):
-        return tuple(
-            self.list_struct_to_device(t) if isinstance(t, (tuple, list))
-            else (t.to(self.device) if torch.is_tensor(t) else t)
-            for t in struct
-        )
 
     def struct_to_device(self, struct):
         if torch.is_tensor(struct):
@@ -188,14 +234,6 @@ class TorchModel(TrainModel):
             for bx in x:
                 if to_device_proc is None:
                     bx = self.struct_to_device(bx)
-
-                    # if isinstance(bx, dict):
-                    #     bx = {
-                    #         n: t.to(self.device) if torch.is_tensor(t) else t
-                    #         for n, t in bx.items()
-                    #     }
-                    # else:
-                    #     bx = self.list_struct_to_device(bx)
                 else:
                     bx = to_device_proc(self, bx)
                 # if len(bx) == 1:
@@ -225,9 +263,11 @@ class TorchModel(TrainModel):
 
 
 def load_model(model_cls, model_path, params_or_path):
-    params = read_json(params_or_path) if isinstance(params_or_path, str) else params_or_path
-    params.pop('dconfig')
-    return TorchModel.create_from_file(model_cls, params, model_path)
+    if isinstance(params_or_path, str):
+        tm = TorchModel.create_from_files(model_cls, params_or_path, model_path)
+    else:
+        tm = TorchModel.create_from_file(model_cls, params_or_path, model_path)
+    return tm.model
 
 
 def load_std_model(model_cls, model_path):

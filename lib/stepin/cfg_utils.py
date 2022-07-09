@@ -22,6 +22,14 @@ def extend_dict(d, **kwargs):
     return d
 
 
+def extend_dict_0(d, new_params=None):
+    if new_params is None:
+        return d
+    d = d.copy()
+    d.update(new_params)
+    return d
+
+
 def update_dict(source_dict, target_dict):
     for k, v in source_dict.items():
         if isinstance(v, dict):

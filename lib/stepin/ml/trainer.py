@@ -96,14 +96,14 @@ class BaseTrainer(ABC):
 
 class TrainerData(ABC):
     @abstractmethod
-    def init(self):
+    def init(self, dconfig: dict, mconfig: dict):
         pass
 
 
 class BaseDpTrainer(BaseTrainer, ABC):
-    def __init__(self, config, data: TrainerData):
+    def __init__(self, config, data):
         super().__init__(config)
-        self.data: TrainerData = data
+        self.data = data
 
-    def on_init_data(self, dconfig, mconfig):
-        self.data.init()
+    def on_init_data(self, dconfig: dict, mconfig: dict):
+        self.data.init(dconfig, mconfig)

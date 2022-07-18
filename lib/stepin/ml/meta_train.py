@@ -447,7 +447,7 @@ def meta_train(
                     'Error on config: ' + str(dconfig) + '  ' + str(mconfig)
                 ) from e
         for repeat_i in range(rcount):
-            model = model_factory(mconfig, dconfig)
+            model = model_factory(mconfig)
             best_values = config_best_values(oconfig)
             logging.info('Fit %s ... %s', repeat_i + 1, all_config)
             learning_rates = oconfig.get('learning_rates', [0.01])
@@ -456,9 +456,9 @@ def meta_train(
             before_train = getattr(train_iter_factory, 'before_train', None)
             multi_pass_train(
                 model,
-                partial(train_iter_factory, dconfig),
-                partial(valid_iter_factory, dconfig),
-                None if test_iter_factory is None else partial(test_iter_factory, dconfig),
+                partial(train_iter_factory, dconfig, mconfig),
+                partial(valid_iter_factory, dconfig, mconfig),
+                None if test_iter_factory is None else partial(test_iter_factory, dconfig, mconfig),
                 metric_calculator, best_values, learning_rates=learning_rates,
                 before_train=before_train,
                 show_custom_proc=show_custom_proc

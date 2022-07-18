@@ -92,3 +92,18 @@ class BaseTrainer(ABC):
             best_info_calculator=best_info_calculator,
             on_init_data=self.on_init_data
         )
+
+
+class TrainerData(ABC):
+    @abstractmethod
+    def init(self):
+        pass
+
+
+class BaseDpTrainer(BaseTrainer, ABC):
+    def __init__(self, config, data: TrainerData):
+        super().__init__(config)
+        self.data: TrainerData = data
+
+    def on_init_data(self, dconfig, mconfig):
+        self.data.init()
